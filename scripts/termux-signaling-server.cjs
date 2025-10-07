@@ -114,7 +114,7 @@ const io = new Server(server, {
   transports: ['websocket', 'polling'],
 });
 
-aio.on('connection', (socket) => {
+io.on('connection', (socket) => {
   console.log(`[+] ${socket.id} connected`);
 
   socket.on('presence:join', ({ nickname, room = 'default' } = {}) => {
