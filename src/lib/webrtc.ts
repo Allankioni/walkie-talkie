@@ -1,4 +1,5 @@
 import { getSocket } from './socket';
+import type { SignalPayload } from './manualSignal';
 
 export type Peer = {
   id: string;
@@ -21,19 +22,23 @@ export class WebRTCManager {
   private micStream: MediaStream | null = null;
   private room = 'default';
   private nickname = 'Guest';
+  private useSocket = true;
 
-  constructor(room?: string, nickname?: string) {
+  constructor(room?: string, nickname?: string, useSocket: boolean = true) {
     if (room) this.room = room;
     if (nickname) this.nickname = nickname;
+    this.useSocket = useSocket;
   }
 
   connectPresence() {
+    if (!this.useSocket) return;
     const socket = getSocket();
     if (!socket.connected) socket.connect();
     socket.emit('presence:join', { nickname: this.nickname, room: this.room });
   }
 
   disconnectPresence() {
+    if (!this.useSocket) return;
     const socket = getSocket();
     socket.emit('presence:leave');
     socket.disconnect();
@@ -68,6 +73,7 @@ export class WebRTCManager {
     } catch {}
 
     pc.onicecandidate = (e) => {
+      if (!this.useSocket) return; // in manual mode we do not trickle; we bundle in SDP
       if (e.candidate) {
         getSocket().emit('webrtc:ice', { targetId: remoteId, candidate: e.candidate });
       }
@@ -111,7 +117,7 @@ export class WebRTCManager {
   if (this.micStream) this.attachMic(pc!);
     const offer = await pc!.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
     await pc!.setLocalDescription(offer);
-    getSocket().emit('webrtc:offer', { targetId: remoteId, sdp: offer });
+    if (this.useSocket) getSocket().emit('webrtc:offer', { targetId: remoteId, sdp: offer });
   }
 
   async handleOffer(fromId: string, sdp: RTCSessionDescriptionInit) {
@@ -121,13 +127,60 @@ export class WebRTCManager {
     await pc!.setRemoteDescription(new RTCSessionDescription(sdp));
     const answer = await pc!.createAnswer();
     await pc!.setLocalDescription(answer);
-    getSocket().emit('webrtc:answer', { targetId: fromId, sdp: answer });
+    if (this.useSocket) getSocket().emit('webrtc:answer', { targetId: fromId, sdp: answer });
   }
 
   async handleAnswer(fromId: string, sdp: RTCSessionDescriptionInit) {
     const pc = this.getPeer(fromId);
     if (!pc) return;
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+  }
+
+  private async awaitIceGatheringComplete(pc: RTCPeerConnection, timeoutMs = 3000): Promise<void> {
+    if (pc.iceGatheringState === 'complete') return;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        pc.removeEventListener('icegatheringstatechange', onChange);
+        resolve();
+      };
+      const onChange = () => {
+        if (pc.iceGatheringState === 'complete') done();
+      };
+      pc.addEventListener('icegatheringstatechange', onChange);
+      setTimeout(done, timeoutMs);
+    });
+  }
+
+  // --- Manual/QR signaling helpers (no socket) ---
+  async createOfferManual(): Promise<SignalPayload> {
+    const remoteId = 'manual';
+    let pc = this.getPeer(remoteId);
+    if (!pc) pc = this.createPeer(remoteId);
+    if (this.micStream) this.attachMic(pc!);
+    const offer = await pc!.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
+    await pc!.setLocalDescription(offer);
+    await this.awaitIceGatheringComplete(pc!);
+    return { v: 1, t: 'offer', s: pc!.localDescription! };
+  }
+
+  async acceptOfferManual(payload: SignalPayload): Promise<SignalPayload> {
+    if (payload.t !== 'offer') throw new Error('Expected offer');
+    const remoteId = 'manual';
+    let pc = this.getPeer(remoteId);
+    if (!pc) pc = this.createPeer(remoteId);
+    if (this.micStream) this.attachMic(pc!);
+    await pc!.setRemoteDescription(new RTCSessionDescription(payload.s));
+    const answer = await pc!.createAnswer();
+    await pc!.setLocalDescription(answer);
+    await this.awaitIceGatheringComplete(pc!);
+    return { v: 1, t: 'answer', s: pc!.localDescription! };
+  }
+
+  async applyAnswerManual(payload: SignalPayload): Promise<void> {
+    if (payload.t !== 'answer') throw new Error('Expected answer');
+    const pc = this.getPeer('manual');
+    if (!pc) throw new Error('Peer not initialized');
+    await pc.setRemoteDescription(new RTCSessionDescription(payload.s));
   }
 
   private attachMic(pc: RTCPeerConnection) {
