@@ -43,6 +43,8 @@ To keep the experience completely offline, host **both** the PWA and the Socket.
 
 **Need `wss://` for HTTPS clients?** Generate a self-signed cert with `openssl`, trust it on each device, and launch the relay with `--cert`/`--key`. This keeps traffic inside the hotspot while satisfying browser security for secure origins.
 
+> Tip: modern browsers require the hotspot IP inside the certificate’s `subjectAltName`. Use an OpenSSL config (see `README_WALKIE_TALKIE.md`) and customize the `IP.n` entries to match your LAN addresses before generating the cert.
+
 > Tip: if you prefer not to run a Node web server on the phone, you can sideload the PWA bundle (from `out/`) into any static-file viewer or even Android WebView apps. Manual pairing via `/manual` still works without sockets.
 
 ## 3) Vercel (frontend) + External Signaling (backend)

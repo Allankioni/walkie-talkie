@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -100,7 +100,7 @@ export default function PWAControls() {
     };
   }, []);
 
-  const install = async () => {
+  const install = useCallback(async () => {
     if (!deferredPrompt) return;
     await deferredPrompt.prompt();
     try {
@@ -109,7 +109,7 @@ export default function PWAControls() {
       setDeferredPrompt(null);
       setShowInstallModal(false);
     }
-  };
+  }, [deferredPrompt]);
 
   const refresh = async () => {
     const regs = await navigator.serviceWorker.getRegistrations();
@@ -121,6 +121,13 @@ export default function PWAControls() {
     try { sessionStorage.setItem('wt_install_dismissed', '1'); } catch {}
     setShowInstallModal(false);
   };
+
+  useEffect(() => {
+    if (showInstallModal && deferredPrompt && platform === "android") {
+      // Auto-trigger the native prompt when we open the modal automatically on Android
+      install();
+    }
+  }, [showInstallModal, deferredPrompt, platform, install]);
 
   if (!deferredPrompt && !updateReady && !showInstallModal) return null;
 

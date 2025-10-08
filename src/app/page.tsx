@@ -1,6 +1,6 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { motion, useMotionValue, useMotionValueEvent } from "framer-motion";
 import { useAppStore } from "@/store/useAppStore";
 import { getSocket } from "@/lib/socket";
 import { WebRTCManager } from "@/lib/webrtc";
@@ -11,7 +11,49 @@ export default function Home() {
   const [nickModal, setNickModal] = useState(false);
   const [nickInput, setNickInput] = useState("");
   const [mounted, setMounted] = useState(false);
+  const [latchActive, setLatchActive] = useState(false);
+  const [sliderBusy, setSliderBusy] = useState(false);
+  const latchRef = useRef(false);
   const rtcRef = useRef<WebRTCManager | null>(null);
+  const SLIDER_WIDTH = useMemo(() => 300, []);
+  const KNOB_SIZE = useMemo(() => 56, []);
+  const sliderRange = useMemo(() => SLIDER_WIDTH - KNOB_SIZE, [SLIDER_WIDTH, KNOB_SIZE]);
+  const dragX = useMotionValue(0);
+  const [sliderProgress, setSliderProgress] = useState(0);
+
+  useEffect(() => {
+    if (sliderRange <= 0) {
+      setSliderProgress(0);
+      return;
+    }
+    const initial = dragX.get();
+    setSliderProgress(Math.min(Math.max(initial / sliderRange, 0), 1));
+  }, [dragX, sliderRange]);
+
+  useMotionValueEvent(dragX, "change", (latest) => {
+    if (sliderRange <= 0) return;
+    const normalized = Math.min(Math.max(latest / sliderRange, 0), 1);
+    setSliderProgress(normalized);
+  });
+
+  const trackGradient = useMemo(() => {
+    const themeDark = "#0b1220";
+    if (latchActive) {
+      const intensity = 0.7 + Math.min(1, sliderProgress) * 0.3;
+      return `linear-gradient(90deg, rgba(34,211,238,${intensity.toFixed(2)}), rgba(168,85,247,${intensity.toFixed(2)}))`;
+    }
+    const glow = Math.min(1, sliderProgress * 1.2);
+    const cyanAlpha = (0.25 + glow * 0.5).toFixed(2);
+    const fuchsiaAlpha = (0.3 + glow * 0.5).toFixed(2);
+    return `linear-gradient(90deg, ${themeDark}, rgba(34,211,238,${cyanAlpha}), rgba(168,85,247,${fuchsiaAlpha}))`;
+  }, [latchActive, sliderProgress]);
+
+  const knobGradient = useMemo(() => {
+    const base = latchActive ? Math.min(1, 0.7 + sliderProgress * 0.3) : Math.min(1, 0.4 + sliderProgress * 0.6);
+    const cyanStop = (0.6 + base * 0.3).toFixed(2);
+    const fuchsiaStop = (0.45 + base * 0.35).toFixed(2);
+    return `linear-gradient(135deg, rgba(34,211,238,${cyanStop}), rgba(168,85,247,${fuchsiaStop}))`;
+  }, [latchActive, sliderProgress]);
 
   useEffect(() => {
     const socket = getSocket();
@@ -69,19 +111,20 @@ export default function Home() {
     });
   }, [users]);
 
-  const startTransmit = async () => {
+  const startTransmit = useCallback(async (): Promise<boolean> => {
     try {
       // Ensure audio context is active after user gesture
       await resumeAudio();
       // HTTPS requirement for mobile getUserMedia (localhost is allowed)
       if (location.protocol !== "https:" && location.hostname !== "localhost") {
         alert("Microphone requires HTTPS on mobile. Use https:// or install a trusted certificate.");
-        return;
+        return false;
       }
       if (!navigator.mediaDevices?.getUserMedia) {
         alert("getUserMedia not supported in this browser.");
-        return;
+        return false;
       }
+      if (transmitting) return true;
       await rtcRef.current?.startMic();
       const socket = getSocket();
       users.forEach((u) => {
@@ -89,6 +132,7 @@ export default function Home() {
       });
       setTransmitting(true);
       playStatic(120);
+      return true;
     } catch (e: unknown) {
       console.error(e);
       const err = e as { message?: unknown };
@@ -102,14 +146,75 @@ export default function Home() {
       } else {
         alert("Microphone unavailable: " + msg);
       }
+      return false;
     }
-  };
+  }, [transmitting, users, setTransmitting]);
 
-  const stopTransmit = () => {
+  useEffect(() => {
+    latchRef.current = latchActive;
+  }, [latchActive]);
+
+  const stopTransmit = useCallback((force = false) => {
+    if (latchRef.current && !force) return;
     rtcRef.current?.stopMic();
     setTransmitting(false);
     playStatic(70);
-  };
+  }, [setTransmitting]);
+
+  const activateLatch = useCallback(async () => {
+    if (sliderBusy || latchRef.current) return true;
+    setSliderBusy(true);
+    const ok = await startTransmit();
+    if (ok) {
+      setLatchActive(true);
+    } else {
+      dragX.set(0);
+    }
+    setSliderBusy(false);
+    return ok;
+  }, [sliderBusy, startTransmit, dragX]);
+
+  const deactivateLatch = useCallback(() => {
+    if (!latchRef.current) return;
+    stopTransmit(true);
+    setLatchActive(false);
+    dragX.set(0);
+  }, [stopTransmit, dragX]);
+
+  useEffect(() => {
+    if (!transmitting && latchActive) {
+      setLatchActive(false);
+    }
+  }, [transmitting, latchActive]);
+
+  useEffect(() => {
+    if (!latchRef.current) return;
+    stopTransmit(true);
+    setLatchActive(false);
+  }, [room, stopTransmit]);
+
+  useEffect(() => {
+    dragX.set(latchActive ? sliderRange : 0);
+  }, [dragX, latchActive, sliderRange]);
+
+  const handleSliderDragEnd = useCallback(async () => {
+    const current = dragX.get();
+    if (!latchRef.current) {
+      if (current >= sliderRange * 0.8) {
+        dragX.set(sliderRange);
+        const ok = await activateLatch();
+        if (!ok) dragX.set(0);
+      } else {
+        dragX.set(0);
+      }
+    } else {
+      if (current <= sliderRange * 0.2) {
+        deactivateLatch();
+      } else {
+        dragX.set(sliderRange);
+      }
+    }
+  }, [activateLatch, deactivateLatch, dragX, sliderRange]);
 
   const submitNick = () => {
     const n = nickInput.trim() || "Guest";
@@ -154,9 +259,9 @@ export default function Home() {
             <div className="relative mt-16 select-none">
               <motion.button
                 onPointerDown={startTransmit}
-                onPointerUp={stopTransmit}
-                onPointerCancel={stopTransmit}
-                onPointerLeave={stopTransmit}
+                onPointerUp={() => stopTransmit(false)}
+                onPointerCancel={() => stopTransmit(false)}
+                onPointerLeave={() => stopTransmit(false)}
                 className="relative w-56 h-56 rounded-full bg-white/10 border border-white/10 backdrop-blur-md shadow-[0_0_40px_rgba(0,255,255,0.15)] touch-none"
                 whileTap={{ scale: 0.96 }}
               >
@@ -178,6 +283,46 @@ export default function Home() {
                 </div>
               </motion.button>
               <p className="text-center mt-4 text-sm text-white/70">Hold to transmit. Release to stop.</p>
+              <div className="mt-6 flex flex-col items-center gap-2">
+                <motion.div
+                  className="relative flex h-14 items-center overflow-hidden rounded-full border border-white/10 shadow-[0_8px_30px_rgba(0,0,0,0.35)]"
+                  style={{ width: SLIDER_WIDTH, background: trackGradient }}
+                >
+                  <span
+                    className={`pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-sm font-medium transition-colors ${latchActive ? "text-[#0b1220]" : "text-white"}`}
+                  >
+                    {latchActive ? "Slide left to release" : "Slide to latch microphone"}
+                  </span>
+                  <motion.div
+                    className={`absolute left-0 top-1/2 flex h-14 w-14 -translate-y-1/2 items-center justify-center rounded-full text-2xl font-medium ${sliderBusy ? "pointer-events-none" : "cursor-pointer"}`}
+                    drag={sliderBusy ? false : "x"}
+                    dragConstraints={{ left: 0, right: sliderRange }}
+                    dragElastic={0.05}
+                    dragMomentum={false}
+                    style={{ x: dragX, touchAction: "none", background: knobGradient }}
+                    animate={
+                      latchActive
+                        ? {
+                            scale: [1, 1.07, 1],
+                            boxShadow: [
+                              "0 8px 24px rgba(2,132,199,0.35)",
+                              "0 0 28px rgba(168,85,247,0.45)",
+                              "0 8px 24px rgba(2,132,199,0.35)",
+                            ],
+                          }
+                        : { scale: 1, boxShadow: "0 8px 24px rgba(2,132,199,0.35)" }
+                    }
+                    transition={{ duration: latchActive ? 1.3 : 0.3, repeat: latchActive ? Infinity : 0, ease: "easeInOut" }}
+                    onDragEnd={handleSliderDragEnd}
+                    aria-label={latchActive ? "Slide left to release microphone" : "Slide right to latch microphone"}
+                  >
+                    <span className="translate-x-0.5 text-xl text-[#0b1220]">→</span>
+                  </motion.div>
+                </motion.div>
+                <p className="text-xs text-white/60 max-w-sm text-center">
+                  Fully slide the handle to the edge to lock the microphone. Slide back to disengage or change channels.
+                </p>
+              </div>
             </div>
           </section>
 

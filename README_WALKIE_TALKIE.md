@@ -83,14 +83,41 @@ $env:NEXT_PUBLIC_SIGNALING_URL = "http://<phone-ip>:41234"
 - Logs inside Termux show connect/disconnect events.
 
 ### Optional: serve WSS/HTTPS without leaving the LAN
-If you install the PWA from an HTTPS origin (e.g. Vercel) but still want offline LAN signaling, run the Termux relay with a self-signed certificate so browsers can connect via `wss://`:
+If you install the PWA from an HTTPS origin (e.g. Vercel) but still want offline LAN signaling, run the Termux relay with a self-signed certificate that includes the hotspot IP in `subjectAltName` so browsers can connect via `wss://`:
 
 ```bash
 pkg install openssl
 mkdir -p ~/certs && cd ~/certs
+cat > signal.cnf <<'EOF'
+[ req ]
+default_bits       = 2048
+prompt             = no
+default_md         = sha256
+req_extensions     = req_ext
+distinguished_name = dn
+
+[ dn ]
+C  = US
+ST = Offline
+L  = Hotspot
+O  = WalkieTalkie
+OU = Signal
+CN = walkie-talkie.local
+
+[ req_ext ]
+subjectAltName = @alt_names
+
+[ alt_names ]
+DNS.1 = walkie-talkie.local
+IP.1  = 192.168.88.48   # replace with your phone's LAN IP
+IP.2  = 127.0.0.1
+EOF
+
 openssl req -newkey rsa:2048 -nodes -keyout signal.key -x509 -days 365 -out signal.crt \
-	-subj "/C=US/ST=Offline/L=Hotspot/O=WalkieTalkie/OU=Signal/CN=walkie-talkie.local"
+	-config signal.cnf -extensions req_ext
 ```
+
+**Important:** edit `IP.1` (and add more `IP.n` entries if needed) to match the actual hotspot/local IPs you plan to use. Without the IP in the SAN list, modern browsers will reject the cert even if you trust it.
 
 Copy `signal.crt` to each client device and trust it (Android: Settings → Security → Install certificates; desktop: OS trust store). Then launch the server with TLS:
 
@@ -100,6 +127,16 @@ node termux-signaling-server.cjs --port 41234 --host 0.0.0.0 \
 ```
 
 Point `NEXT_PUBLIC_SIGNALING_URL` to `https://<phone-ip>:41234`. Because the certificate never leaves your LAN, the setup stays offline—just make sure every device trusts the self-signed cert.
+
+#### Offering the cert as a download
+If you prefer to distribute the certificate from the same hotspot instead of sideloading files, copy it into the static assets served by your PWA:
+
+```bash
+# Assuming the app is running from the repo root
+cp ~/certs/signal.crt ~/walkie-talkie/public/walkie-talkie-signal.crt
+```
+
+Users can then visit `http://<hub-ip>:3000/walkie-talkie-signal.crt` (or the exported site’s equivalent path) to download it directly. Android places the file in Downloads; tapping it there installs the CA with far fewer warnings because it comes from the trusted hotspot host. Repeat after regenerating the cert so clients always get the latest version.
 
 > **Security note:** This server is meant for trusted LAN/hotspot use. Anyone who can reach the port can join the room, so keep it off public networks or wrap it behind a VPN.
 
