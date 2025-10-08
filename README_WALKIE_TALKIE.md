@@ -82,6 +82,25 @@ $env:NEXT_PUBLIC_SIGNALING_URL = "http://<phone-ip>:41234"
 - `curl http://<phone-ip>:41234/presence` → current rooms and nicknames.
 - Logs inside Termux show connect/disconnect events.
 
+### Optional: serve WSS/HTTPS without leaving the LAN
+If you install the PWA from an HTTPS origin (e.g. Vercel) but still want offline LAN signaling, run the Termux relay with a self-signed certificate so browsers can connect via `wss://`:
+
+```bash
+pkg install openssl
+mkdir -p ~/certs && cd ~/certs
+openssl req -newkey rsa:2048 -nodes -keyout signal.key -x509 -days 365 -out signal.crt \
+	-subj "/C=US/ST=Offline/L=Hotspot/O=WalkieTalkie/OU=Signal/CN=walkie-talkie.local"
+```
+
+Copy `signal.crt` to each client device and trust it (Android: Settings → Security → Install certificates; desktop: OS trust store). Then launch the server with TLS:
+
+```bash
+node termux-signaling-server.cjs --port 41234 --host 0.0.0.0 \
+	--cert ~/certs/signal.crt --key ~/certs/signal.key
+```
+
+Point `NEXT_PUBLIC_SIGNALING_URL` to `https://<phone-ip>:41234`. Because the certificate never leaves your LAN, the setup stays offline—just make sure every device trusts the self-signed cert.
+
 > **Security note:** This server is meant for trusted LAN/hotspot use. Anyone who can reach the port can join the room, so keep it off public networks or wrap it behind a VPN.
 
 ## Stretch ideas

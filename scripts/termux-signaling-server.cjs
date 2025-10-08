@@ -15,7 +15,9 @@
  * can pair without any external infrastructure.
  */
 
+const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const os = require('os');
 const { Server } = require('socket.io');
 
@@ -61,6 +63,33 @@ for (let i = 0; i < args.length; i += 1) {
     i += 1;
     continue;
   }
+  if (arg.startsWith('--cert=')) {
+    cliOptions.certPath = arg.split('=')[1];
+    continue;
+  }
+  if (arg === '--cert') {
+    cliOptions.certPath = args[i + 1];
+    i += 1;
+    continue;
+  }
+  if (arg.startsWith('--key=')) {
+    cliOptions.keyPath = arg.split('=')[1];
+    continue;
+  }
+  if (arg === '--key') {
+    cliOptions.keyPath = args[i + 1];
+    i += 1;
+    continue;
+  }
+  if (arg.startsWith('--ca=')) {
+    cliOptions.caPath = arg.split('=')[1];
+    continue;
+  }
+  if (arg === '--ca') {
+    cliOptions.caPath = args[i + 1];
+    i += 1;
+    continue;
+  }
   console.warn(`Unknown argument: ${arg}`);
 }
 
@@ -73,6 +102,9 @@ const options = {
         ?.split(',')
         .map((s) => s.trim())
         .filter(Boolean),
+  certPath: cliOptions.certPath || process.env.SSL_CERT_PATH || null,
+  keyPath: cliOptions.keyPath || process.env.SSL_KEY_PATH || null,
+  caPath: cliOptions.caPath || process.env.SSL_CA_PATH || null,
 };
 
 if (!Number.isFinite(options.port)) {
@@ -94,7 +126,7 @@ function buildPresence(room) {
   return list;
 }
 
-const server = http.createServer((req, res) => {
+const handler = (req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', users: users.size }));
@@ -107,7 +139,28 @@ const server = http.createServer((req, res) => {
   }
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Walkie-Talkie signaling server is running. Use /health or /presence for status.');
-});
+};
+
+let server;
+let scheme = 'http';
+if (options.certPath && options.keyPath) {
+  try {
+    const tlsOptions = {
+      key: fs.readFileSync(options.keyPath),
+      cert: fs.readFileSync(options.certPath),
+    };
+    if (options.caPath) {
+      tlsOptions.ca = fs.readFileSync(options.caPath);
+    }
+    server = https.createServer(tlsOptions, handler);
+    scheme = 'https';
+  } catch (err) {
+    console.error('Failed to load TLS cert/key. Falling back to HTTP.', err);
+    server = http.createServer(handler);
+  }
+} else {
+  server = http.createServer(handler);
+}
 
 const io = new Server(server, {
   cors: { origin: corsOrigins, methods: ['GET', 'POST'] },
@@ -172,11 +225,11 @@ server.listen(options.port, options.host, () => {
   const ipAddresses = getLocalIPs();
   console.log('----------------------------------------');
   console.log('Walkie-Talkie signaling server (Termux mode)');
-  console.log(`Listening on http://${options.host}:${options.port}`);
+  console.log(`Listening on ${scheme}://${options.host}:${options.port}`);
   if (ipAddresses.length > 0) {
     console.log('Reachable LAN addresses:');
     ipAddresses.forEach((ip) => {
-      console.log(`  → http://${ip}:${options.port}`);
+      console.log(`  → ${scheme}://${ip}:${options.port}`);
     });
   }
   console.log('Use /health for status. Press Ctrl+C to stop.');
@@ -217,5 +270,8 @@ function printHelp() {
     '  --port <number>           Port to listen on (default 41234 or $PORT)\n' +
     '  --host <address>          Interface to bind (default 0.0.0.0 or $HOST)\n' +
     '  --allow-origins <list>    Comma-separated origins for CORS (default "*")\n' +
+    '  --cert <path>             Enable HTTPS/WSS with certificate (or $SSL_CERT_PATH)\n' +
+    '  --key <path>              Private key path for HTTPS (or $SSL_KEY_PATH)\n' +
+    '  --ca <path>               Optional CA bundle to present (or $SSL_CA_PATH)\n' +
     '  -h, --help                Show this message\n');
 }
