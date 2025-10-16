@@ -13,7 +13,19 @@ export default function PWAControls() {
   const [installed, setInstalled] = useState(false);
   const [platform, setPlatform] = useState<"ios" | "android" | "desktop">("desktop");
 
+  const install = useCallback(async () => {
+    if (!deferredPrompt) return;
+    await deferredPrompt.prompt();
+    try {
+      await deferredPrompt.userChoice;
+    } finally {
+      setDeferredPrompt(null);
+      setShowInstallModal(false);
+    }
+  }, [deferredPrompt]);
+
   useEffect(() => {
+    if (typeof window === "undefined") return;
     const media = window.matchMedia('(display-mode: standalone)');
     const onBeforeInstall = (e: Event) => {
       e.preventDefault();
@@ -98,18 +110,7 @@ export default function PWAControls() {
       window.removeEventListener('appinstalled', onAppInstalled);
       window.removeEventListener('wt-open-install', onOpenInstall as EventListener);
     };
-  }, []);
-
-  const install = useCallback(async () => {
-    if (!deferredPrompt) return;
-    await deferredPrompt.prompt();
-    try {
-      await deferredPrompt.userChoice;
-    } finally {
-      setDeferredPrompt(null);
-      setShowInstallModal(false);
-    }
-  }, [deferredPrompt]);
+  }, [deferredPrompt, install]);
 
   const refresh = async () => {
     const regs = await navigator.serviceWorker.getRegistrations();

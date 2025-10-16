@@ -5,12 +5,29 @@ import { useAppStore } from "@/store/useAppStore";
 import { getSocket } from "@/lib/socket";
 import { WebRTCManager } from "@/lib/webrtc";
 import { playStatic, resumeAudio } from "@/lib/staticNoise";
+import { discoverSignalHubs, type HubDiscoveryResult } from "@/lib/discovery";
 
 export default function Home() {
-  const { users, setNickname, nickname, connectSocket, transmitting, setTransmitting, room, changeRoom, loadNickname } = useAppStore();
+  const {
+    users,
+    setNickname,
+    nickname,
+    connectSocket,
+    transmitting,
+    setTransmitting,
+    room,
+    changeRoom,
+    loadNickname,
+    signalUrl,
+    setSignalUrl,
+    loadSignalUrl,
+    signalError,
+    clearSignalError,
+  } = useAppStore();
   const [nickModal, setNickModal] = useState(false);
   const [nickInput, setNickInput] = useState("");
-  const [mounted, setMounted] = useState(false);
+  const [isHttpsOrigin, setIsHttpsOrigin] = useState(false);
+  const [originHost, setOriginHost] = useState("");
   const [latchActive, setLatchActive] = useState(false);
   const [sliderBusy, setSliderBusy] = useState(false);
   const latchRef = useRef(false);
@@ -20,6 +37,10 @@ export default function Home() {
   const sliderRange = useMemo(() => SLIDER_WIDTH - KNOB_SIZE, [SLIDER_WIDTH, KNOB_SIZE]);
   const dragX = useMotionValue(0);
   const [sliderProgress, setSliderProgress] = useState(0);
+  const [signalInput, setSignalInput] = useState("");
+  const [discoveringHubs, setDiscoveringHubs] = useState(false);
+  const [discoveredHubs, setDiscoveredHubs] = useState<HubDiscoveryResult[]>([]);
+  const [discoveryMessage, setDiscoveryMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (sliderRange <= 0) {
@@ -55,6 +76,78 @@ export default function Home() {
     return `linear-gradient(135deg, rgba(34,211,238,${cyanStop}), rgba(168,85,247,${fuchsiaStop}))`;
   }, [latchActive, sliderProgress]);
 
+  const activeSignal = useMemo(() => {
+    const ensureScheme = (url: string) => {
+      if (!url) return url;
+      if (url.startsWith("http://") || url.startsWith("https://")) return url;
+      if (url.startsWith("ws://")) return `http://${url.slice(5)}`;
+      if (url.startsWith("wss://")) return `https://${url.slice(6)}`;
+      if (url.startsWith("//")) return `https:${url}`;
+      if (url.startsWith("/")) return url;
+      return `https://${url}`;
+    };
+
+    if (signalUrl === "/" || !signalUrl) {
+      const host = originHost || (typeof window !== "undefined" ? window.location.host : "");
+      return {
+        label: host ? `Same origin (${host})` : "Same origin",
+        host,
+      };
+    }
+
+    const normalized = ensureScheme(signalUrl);
+    let parsedHost = "";
+    try {
+      const parsed = new URL(normalized, typeof window !== "undefined" ? window.location.origin : "http://localhost");
+      parsedHost = parsed.hostname + (parsed.port ? `:${parsed.port}` : "");
+    } catch {
+      parsedHost = "";
+    }
+    return {
+      label: signalUrl,
+      host: parsedHost,
+    };
+  }, [signalUrl, originHost]);
+
+  const handleApplySignal = useCallback(() => {
+    const candidate = signalInput.trim();
+    setSignalUrl(candidate);
+    setDiscoveredHubs([]);
+    setDiscoveryMessage(candidate ? `Attempting to connect to ${candidate}` : "Using same-origin signaling hub");
+    clearSignalError();
+  }, [signalInput, setSignalUrl, clearSignalError]);
+
+  const handleUseDiscoveredHub = useCallback((url: string) => {
+    setSignalUrl(url);
+    setDiscoveredHubs([]);
+    setDiscoveryMessage(`Switched to ${url}`);
+    clearSignalError();
+  }, [setSignalUrl, clearSignalError]);
+
+  const handleDiscoverHubs = useCallback(async () => {
+    if (discoveringHubs) return;
+    setDiscoveringHubs(true);
+    setDiscoveryMessage(null);
+    clearSignalError();
+    try {
+      const preferred = signalUrl && signalUrl !== "/" ? signalUrl : signalInput.trim();
+      const results = await discoverSignalHubs({ storedUrl: preferred || undefined });
+      setDiscoveredHubs(results);
+      if (results.length === 0) {
+        setDiscoveryMessage("No hubs responded. Ensure a signaling server is running on this network.");
+      }
+    } catch (err) {
+      setDiscoveryMessage(err instanceof Error ? err.message : "Discovery failed.");
+    } finally {
+      setDiscoveringHubs(false);
+    }
+  }, [discoveringHubs, signalInput, signalUrl, clearSignalError]);
+
+  useEffect(() => {
+    if (!signalError) return;
+    setDiscoveryMessage(signalError);
+  }, [signalError]);
+
   useEffect(() => {
     const socket = getSocket();
     socket.on("webrtc:offer", async ({ fromId, sdp }) => {
@@ -73,13 +166,21 @@ export default function Home() {
     };
   }, []);
 
-  // On mount, load stored nickname; modal opens if none
+  // On mount, load stored nickname and preferred signaling hub
   useEffect(() => {
     loadNickname();
-  }, [loadNickname]);
+    loadSignalUrl();
+  }, [loadNickname, loadSignalUrl]);
 
   useEffect(() => {
-    setMounted(true);
+    setSignalInput(signalUrl === "/" ? "" : signalUrl);
+  }, [signalUrl]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setIsHttpsOrigin(window.location.protocol === "https:");
+      setOriginHost(window.location.host);
+    }
   }, []);
 
   // When nickname available, connect and hide modal; otherwise show modal
@@ -226,10 +327,12 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#0b1220] to-[#0f172a] text-white">
-      <div className="mx-auto max-w-5xl px-4 py-6">
-        <header className="flex items-center justify-between gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-300 to-fuchsia-400">Walkie-Talkie</h1>
-          <div className="flex gap-2 items-center">
+      <div className="px-4 py-6 mx-auto max-w-6xl">
+        <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <h1 className="text-center text-3xl font-semibold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-300 to-fuchsia-400 sm:text-left">
+            Walkie-Talkie
+          </h1>
+          <div className="flex flex-wrap items-center justify-center gap-3 sm:justify-end">
             <button
               onClick={() => setNickModal(true)}
               className="rounded-md px-3 py-1.5 text-sm bg-white/10 hover:bg-white/15 backdrop-blur-md border border-white/10"
@@ -238,8 +341,8 @@ export default function Home() {
             </button>
             {/* Install UI removed */}
           </div>
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-white/60">Channel</label>
+          <div className="flex items-center justify-center gap-2 sm:justify-end">
+            <label className="text-xs uppercase tracking-[0.2em] text-white/60">Channel</label>
             <select
               className="rounded-md bg-white/10 border border-white/10 px-2 py-1 text-sm"
               value={room}
@@ -254,15 +357,15 @@ export default function Home() {
           </div>
         </header>
 
-        <main className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
-          <section className="md:col-span-2 flex flex-col items-center justify-center">
-            <div className="relative mt-16 select-none">
+        <main className="mt-10 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+          <section className="flex flex-col items-center justify-center">
+            <div className="relative mt-12 w-full max-w-sm select-none sm:mt-16 md:max-w-md">
               <motion.button
                 onPointerDown={startTransmit}
                 onPointerUp={() => stopTransmit(false)}
                 onPointerCancel={() => stopTransmit(false)}
                 onPointerLeave={() => stopTransmit(false)}
-                className="relative w-56 h-56 rounded-full bg-white/10 border border-white/10 backdrop-blur-md shadow-[0_0_40px_rgba(0,255,255,0.15)] touch-none"
+                className="relative mx-auto aspect-square w-full max-w-[13rem] rounded-full bg-white/10 border border-white/10 backdrop-blur-md shadow-[0_0_40px_rgba(0,255,255,0.15)] touch-none sm:max-w-[15rem] md:max-w-[18rem]"
                 whileTap={{ scale: 0.96 }}
               >
                 <motion.div
@@ -326,21 +429,112 @@ export default function Home() {
             </div>
           </section>
 
-          <aside className="md:col-span-1">
-            <h2 className="text-sm uppercase tracking-widest text-white/60">Nearby Users</h2>
-            <div className="mt-3 grid gap-3">
-              {users.length === 0 && (
-                <div className="rounded-lg border border-white/10 bg-white/5 p-4 text-white/60">Waiting for others on the same Wi‑Fi…</div>
-              )}
-              {users.map((u) => (
-                <div key={u.id} className="rounded-xl border border-white/10 bg-white/[0.06] backdrop-blur-md p-4 flex items-center gap-3">
-                  <div className="h-10 w-10 rounded-full bg-gradient-to-br from-cyan-300 to-fuchsia-400" />
-                  <div className="flex-1">
-                    <div className="text-sm font-medium">{u.nickname || "User"}</div>
-                    <div className="text-xs text-white/60">{u.id.slice(0, 6)}</div>
-                  </div>
+          <aside className="space-y-4">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.06] backdrop-blur-md p-4">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-sm uppercase tracking-widest text-white/70">Signal Hub</h2>
+                {discoveringHubs && <span className="text-[10px] uppercase tracking-[0.2em] text-cyan-300">Scanning…</span>}
+              </div>
+              <div className="mt-3 space-y-1 text-xs text-white/60">
+                <div>
+                  Active URL: <span className="text-white">{activeSignal.label}</span>
                 </div>
-              ))}
+                <div>
+                  Resolved host/IP: <span className="text-white">{activeSignal.host || "Unknown"}</span>
+                </div>
+              </div>
+              <label className="mt-3 flex flex-col gap-1 text-xs text-white/60">
+                <span>Override URL</span>
+                <input
+                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-300 focus:bg-white/10"
+                  placeholder="/ (same origin)"
+                  value={signalInput}
+                  onChange={(e) => setSignalInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleApplySignal();
+                    }
+                  }}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  onClick={handleApplySignal}
+                  className="rounded-lg border border-white/10 bg-white/10 px-3 py-2 text-xs font-medium uppercase tracking-[0.15em] text-white transition hover:bg-white/15"
+                >
+                  Use hub
+                </button>
+                <button
+                  onClick={handleDiscoverHubs}
+                  disabled={discoveringHubs}
+                  className="rounded-lg border border-cyan-400/40 bg-cyan-500/20 px-3 py-2 text-xs font-medium uppercase tracking-[0.15em] text-cyan-200 transition focus-visible:outline-2 focus-visible:outline-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Discover hubs
+                </button>
+              </div>
+              <p className="mt-3 text-[11px] leading-relaxed text-white/50">
+                {isHttpsOrigin
+                  ? "Tip: this page is served over HTTPS, so only secure (https://) hubs can respond. If your hotspot server is HTTP, enable TLS or enter the address manually."
+                  : "Tip: stay on the same Wi‑Fi/hotspot as the host. The scanner checks common LAN ranges for Socket.IO signaling endpoints."}
+              </p>
+              {discoveryMessage && (
+                <div className="mt-3 space-y-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
+                  <p>{discoveryMessage}</p>
+                  {signalError && signalUrl !== '/' && (
+                    <button
+                      onClick={() => {
+                        const su = signalUrl;
+                        let target = su;
+                        if (su.startsWith('ws://')) target = `http://${su.slice(5)}`;
+                        else if (su.startsWith('wss://')) target = `https://${su.slice(6)}`;
+                        else if (!su.startsWith('http')) target = `https://${su}`;
+                        window.open(target, '_blank', 'noopener');
+                      }}
+                      className="inline-flex items-center justify-center rounded-md border border-amber-300/50 bg-amber-300/20 px-2 py-1 text-[11px] font-medium text-amber-100 transition hover:bg-amber-300/30"
+                    >
+                      Open hub to trust certificate
+                    </button>
+                  )}
+                </div>
+              )}
+              {discoveredHubs.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {discoveredHubs.map((hub) => (
+                    <button
+                      key={hub.url}
+                      onClick={() => handleUseDiscoveredHub(hub.url)}
+                      className="w-full rounded-xl border border-white/10 bg-white/10 px-3 py-2 text-left transition hover:border-cyan-300 hover:bg-white/15"
+                    >
+                      <div className="flex items-center justify-between gap-2 text-sm">
+                        <span className="font-medium text-white">{hub.url}</span>
+                        <span className="text-xs text-white/60">{hub.latencyMs} ms</span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-white/60">Users: {typeof hub.users === "number" ? hub.users : "?"}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <h2 className="text-sm uppercase tracking-widest text-white/60">Nearby Users</h2>
+              <div className="mt-3 grid gap-3">
+                {users.length === 0 && (
+                  <div className="rounded-lg border border-white/10 bg-white/5 p-4 text-white/60">Waiting for others on the same Wi‑Fi…</div>
+                )}
+                {users.map((u) => (
+                  <div key={u.id} className="rounded-xl border border-white/10 bg-white/[0.06] backdrop-blur-md p-4 flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-full bg-gradient-to-br from-cyan-300 to-fuchsia-400" />
+                    <div className="flex-1">
+                      <div className="text-sm font-medium">{u.nickname || "User"}</div>
+                      <div className="text-xs text-white/60">{u.id.slice(0, 6)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </aside>
         </main>

@@ -138,6 +138,28 @@ cp ~/certs/signal.crt ~/walkie-talkie/public/walkie-talkie-signal.crt
 
 Users can then visit `http://<hub-ip>:3000/walkie-talkie-signal.crt` (or the exported site’s equivalent path) to download it directly. Android places the file in Downloads; tapping it there installs the CA with far fewer warnings because it comes from the trusted hotspot host. Repeat after regenerating the cert so clients always get the latest version.
 
+#### Clearing browser warnings for the signaling hub
+When a browser shows “Your connection is not private” for `https://<hub-ip>:<port>`, it means the self-signed certificate hasn’t been trusted yet. You only need to trust it once per device:
+
+- **Android (Chrome/Chromium browsers)**
+	1. Download the `signal.crt` file (for example from `/walkie-talkie-signal.crt`).
+	2. Open **Settings → Security → Encryption & credentials → Install a certificate → CA certificate**.
+	3. Pick the downloaded file. Android will warn that the certificate allows traffic inspection; accept because you generated it yourself.
+	4. Reopen the signaling URL; the warning disappears and the PWA can connect silently.
+
+- **Windows (Chrome/Edge desktop)**
+	1. Open the signaling URL in the browser, click **Advanced → Continue** once to reach the site.
+	2. In the address bar, click the certificate warning (triangle) → **Certificate is not valid**.
+	3. Choose **Install Certificate…**, select **Local Machine** (requires admin) → **Place all certificates in the following store** → **Trusted Root Certification Authorities**.
+	4. Finish the wizard. Close the tab and reopen `https://<hub-ip>:<port>`—the warning is gone.
+
+- **macOS (Safari/Chrome)**
+	1. Download the `signal.crt` file and double-click it to add to Keychain Access.
+	2. In Keychain Access, find the certificate under **System** or **Login**, open it, expand **Trust**, and set **When using this certificate** to **Always Trust**.
+	3. Reopen the signaling URL.
+
+After trusting the cert, the Walkie-Talkie UI can reach the signaling server directly—no need to pre-open the URL in a separate tab or click through warnings again unless you regenerate the certificate.
+
 > **Security note:** This server is meant for trusted LAN/hotspot use. Anyone who can reach the port can join the room, so keep it off public networks or wrap it behind a VPN.
 
 ## Stretch ideas

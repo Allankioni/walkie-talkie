@@ -77,7 +77,10 @@ export default function ManualPage() {
 						<h2 className="text-sm uppercase tracking-widest text-white/60">Your QR / Payload</h2>
 						{qrDataUrl ? (
 							<div className="mt-2 flex flex-col items-center gap-2">
-								<img src={qrDataUrl} alt="Pairing QR" className="w-56 h-56 bg-white p-2 rounded" />
+								<div className="flex h-56 w-56 items-center justify-center overflow-hidden rounded bg-white p-2">
+									{/* eslint-disable-next-line @next/next/no-img-element */}
+									<img src={qrDataUrl} alt="Pairing QR" className="h-full w-full object-contain" />
+								</div>
 								<textarea className="w-full h-28 rounded-md bg-white/10 border border-white/10 p-2 text-xs break-all" value={packedText} readOnly />
 							</div>
 						) : (
