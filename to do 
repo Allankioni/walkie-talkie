@@ -1,0 +1,8 @@
+center the push button 
+use unique port number instead of 41234
+first time use of new signalling server IP should auto redirect  to allow trust certificate 
+look for vulnerabilities 
+add privacy and policies 
+make enter key to auto select join during assigning nicknames
+make signaling server to send response to web app after successful connection 
+create a new way to share IP address faster like qr code
